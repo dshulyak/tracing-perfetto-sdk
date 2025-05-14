@@ -1,12 +1,12 @@
 //! The main tracing layer and related utils exposed by this crate.
-use std::sync::atomic;
+use std::sync::atomic::{self, AtomicU64};
 use std::{borrow, env, fs, process, sync, thread, time};
 
 #[cfg(feature = "tokio")]
 use tokio::task;
 use tracing::span;
 use tracing_perfetto_sdk_schema as schema;
-use tracing_perfetto_sdk_sys::ffi;
+use tracing_perfetto_sdk_sys::ffi::{self, get_tracing_init_count};
 use tracing_subscriber::{layer, registry};
 
 use crate::ids::thread_id;
@@ -32,7 +32,7 @@ pub struct Builder<'c> {
 }
 
 struct ThreadLocalCtx {
-    descriptor_sent: atomic::AtomicBool,
+    descriptor_sent: AtomicU64,
 }
 
 struct Inner {
@@ -41,7 +41,7 @@ struct Inner {
     output_file: sync::Mutex<Option<fs::File>>,
     drop_flush_timeout: time::Duration,
     process_track_uuid: ids::TrackUuid,
-    process_descriptor_sent: atomic::AtomicBool,
+    process_descriptor_sent: atomic::AtomicU64,
     #[cfg(feature = "tokio")]
     tokio_descriptor_sent: atomic::AtomicBool,
     #[cfg(feature = "tokio")]
@@ -109,7 +109,7 @@ impl SdkLayer {
         let drop_flush_timeout = builder.drop_flush_timeout;
 
         let process_track_uuid = ids::TrackUuid::for_process(process::id());
-        let process_descriptor_sent = atomic::AtomicBool::new(false);
+        let process_descriptor_sent = atomic::AtomicU64::new(0);
         #[cfg(feature = "tokio")]
         let tokio_descriptor_sent = atomic::AtomicBool::new(false);
         #[cfg(feature = "tokio")]
@@ -132,19 +132,32 @@ impl SdkLayer {
     }
 
     fn ensure_context_known(&self) {
-        self.ensure_process_known();
-        self.ensure_thread_known();
+        let current_count = get_tracing_init_count() + 1;
+        self.ensure_process_known(current_count);
+        self.ensure_thread_known(current_count);
         #[cfg(feature = "tokio")]
         self.ensure_tokio_runtime_known();
     }
 
-    fn ensure_process_known(&self) {
+    fn ensure_process_known(&self, count: u64) {
         let process_descriptor_sent = self
             .inner
             .process_descriptor_sent
-            .fetch_or(true, atomic::Ordering::Relaxed);
-
-        if !process_descriptor_sent {
+            .load(atomic::Ordering::Relaxed);
+        if process_descriptor_sent == count {
+            return;
+        }
+        if self
+            .inner
+            .process_descriptor_sent
+            .compare_exchange(
+                process_descriptor_sent,
+                count,
+                atomic::Ordering::Relaxed,
+                atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+        {
             let process_name = env::current_exe()
                 .unwrap_or_default()
                 .to_string_lossy()
@@ -161,23 +174,23 @@ impl SdkLayer {
         }
     }
 
-    fn ensure_thread_known(&self) {
-        let thread_local_ctx = self.inner.thread_local_ctxs.get_or(|| ThreadLocalCtx {
-            descriptor_sent: atomic::AtomicBool::new(false),
-        });
-        let thread_descriptor_sent = thread_local_ctx
-            .descriptor_sent
-            .fetch_or(true, atomic::Ordering::Relaxed);
-        if !thread_descriptor_sent {
-            let tid = thread_id();
-            ffi::trace_track_descriptor_thread(
-                self.inner.process_track_uuid.as_raw(),
-                ids::TrackUuid::for_thread(tid).as_raw(),
-                process::id(),
-                thread::current().name().unwrap_or(""),
-                thread_id() as u32,
-            );
+    fn ensure_thread_known(&self, count: u64) {
+        let thread_local_ctx = self
+            .inner
+            .thread_local_ctxs
+            .get_or(|| ThreadLocalCtx { descriptor_sent: AtomicU64::new(0) });
+        if thread_local_ctx.descriptor_sent.load(atomic::Ordering::Relaxed) == count {
+            return;
         }
+        thread_local_ctx.descriptor_sent.store(count, atomic::Ordering::Relaxed);
+        let tid = thread_id();
+        ffi::trace_track_descriptor_thread(
+            self.inner.process_track_uuid.as_raw(),
+            ids::TrackUuid::for_thread(tid).as_raw(),
+            process::id(),
+            thread::current().name().unwrap_or(""),
+            thread_id() as u32,
+        );
     }
 
     #[cfg(feature = "tokio")]

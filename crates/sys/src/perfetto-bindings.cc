@@ -1,13 +1,25 @@
 #include "perfetto-bindings.h"
 #include <stdexcept>
 
+std::atomic<uint64_t> gRustTracingInitCount(0);
+
+uint64_t get_tracing_init_count() {
+  return gRustTracingInitCount.load(std::memory_order_relaxed);
+}
+
+void increment_tracing_init_count() {
+  gRustTracingInitCount.fetch_add(1, std::memory_order_relaxed);
+}
+
 class RustTracingDataSource
     : public perfetto::DataSource<RustTracingDataSource> {
 public:
   // Empty implementations of these purely virtual methods:
   void OnSetup(const SetupArgs &) override {}
 
-  void OnStart(const StartArgs &) override {}
+  void OnStart(const StartArgs &) override {
+    increment_tracing_init_count();
+  }
 
   void OnStop(const StopArgs &) override {}
 };

@@ -58,6 +58,8 @@ pub mod ffi {
     unsafe extern "C++" {
         include!("src/perfetto-bindings.h");
 
+        fn get_tracing_init_count() -> u64;
+
         /// Initialize the global tracing infrastructure.
         ///
         /// Must be called once before all other functions in this module.

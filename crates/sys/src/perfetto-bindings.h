@@ -8,6 +8,8 @@ struct PerfettoTracingSession;
 #include <memory>
 #include <rust/cxx.h>
 
+uint64_t get_tracing_init_count();
+
 using LogCallback = rust::Fn<void(LogLev level, int line, rust::Str filename,
                                   rust::Str message)>;
 
