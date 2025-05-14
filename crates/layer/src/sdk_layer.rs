@@ -10,7 +10,7 @@ use tracing_perfetto_sdk_sys::ffi;
 use tracing_subscriber::{layer, registry};
 
 use crate::ids::thread_id;
-use crate::{debug_annotations, error, ffi_utils, flavor, ids, init};
+use crate::{debug_annotations, error, ffi_utils, ids, init};
 
 /// A layer to be used with `tracing-subscriber` that forwards collected spans
 /// to the Perfetto SDK via the C++ API.
@@ -87,7 +87,11 @@ impl SdkLayer {
         use std::os::fd::AsRawFd as _;
 
         // Shared global initialization for all layers
-        init::global_init(builder.name, builder.enable_in_process, builder.enable_system);
+        init::global_init(
+            builder.name,
+            builder.enable_in_process,
+            builder.enable_system,
+        );
 
         let fd = builder
             .output_file
@@ -196,18 +200,6 @@ impl SdkLayer {
         }
     }
 
-    fn pick_trace_track(&self) -> (ids::TrackUuid, flavor::Flavor) {
-        #[cfg(feature = "tokio")]
-        if task::try_id().is_some() {
-            return (self.inner.tokio_track_uuid, flavor::Flavor::Async);
-        }
-
-        (
-            ids::TrackUuid::for_thread(thread_id()),
-            flavor::Flavor::Sync,
-        )
-    }
-
     /// Flush internal buffers, making the best effort for all pending writes to
     /// be visible on this layer's `output_file`.
     pub fn flush(&self, timeout: time::Duration) -> error::Result<()> {
@@ -228,22 +220,8 @@ where
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
 
-        let (track_uuid, flavor) = self.pick_trace_track();
-        let meta = span.metadata();
-
         let mut debug_annotations = debug_annotations::FFIDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
-
-        if flavor == flavor::Flavor::Sync {
-            self.ensure_context_known();
-            ffi::trace_track_event_slice_begin(
-                track_uuid.as_raw(),
-                meta.name(),
-                meta.file().unwrap_or_default(),
-                meta.line().unwrap_or_default(),
-                &debug_annotations.as_ffi(),
-            );
-        }
 
         span.extensions_mut().insert(debug_annotations);
     }
@@ -271,7 +249,7 @@ where
 
         if !debug_annotations.suppress_event() {
             let meta = event.metadata();
-            let (track_uuid, _) = self.pick_trace_track();
+            let track_uuid = ids::TrackUuid::for_thread(thread_id());
             ffi::trace_track_event_instant(
                 track_uuid.as_raw(),
                 meta.name(),
@@ -285,54 +263,35 @@ where
     fn on_enter(&self, id: &span::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
 
-        let (track_uuid, flavor) = self.pick_trace_track();
+        let track_uuid = ids::TrackUuid::for_thread(thread_id());
         let meta = span.metadata();
 
-        if flavor == flavor::Flavor::Async {
-            self.ensure_context_known();
-            ffi::trace_track_event_slice_begin(
-                track_uuid.as_raw(),
-                meta.name(),
-                meta.file().unwrap_or_default(),
-                meta.line().unwrap_or_default(),
-                &span
-                    .extensions()
-                    .get()
-                    .unwrap_or(&debug_annotations::FFIDebugAnnotations::default())
-                    .as_ffi(),
-            );
-        }
+        self.ensure_context_known();
+        ffi::trace_track_event_slice_begin(
+            track_uuid.as_raw(),
+            meta.name(),
+            meta.file().unwrap_or_default(),
+            meta.line().unwrap_or_default(),
+            &span
+                .extensions()
+                .get()
+                .unwrap_or(&debug_annotations::FFIDebugAnnotations::default())
+                .as_ffi(),
+        );
     }
 
     fn on_exit(&self, id: &tracing::Id, ctx: layer::Context<'_, S>) {
         let span = ctx.span(id).expect("span to be found (this is a bug)");
 
         let meta = span.metadata();
-        let (track_uuid, flavor) = self.pick_trace_track();
+        let track_uuid = ids::TrackUuid::for_thread(thread_id());
 
-        if flavor == flavor::Flavor::Async {
-            ffi::trace_track_event_slice_end(
-                track_uuid.as_raw(),
-                meta.name(),
-                meta.file().unwrap_or_default(),
-                meta.line().unwrap_or_default(),
-            );
-        }
-    }
-
-    fn on_close(&self, id: tracing::Id, ctx: layer::Context<'_, S>) {
-        let span = ctx.span(&id).expect("span to be found (this is a bug)");
-
-        let meta = span.metadata();
-        let (track_uuid, flavor) = self.pick_trace_track();
-        if flavor == flavor::Flavor::Sync {
-            ffi::trace_track_event_slice_end(
-                track_uuid.as_raw(),
-                meta.name(),
-                meta.file().unwrap_or_default(),
-                meta.line().unwrap_or_default(),
-            );
-        }
+        ffi::trace_track_event_slice_end(
+            track_uuid.as_raw(),
+            meta.name(),
+            meta.file().unwrap_or_default(),
+            meta.line().unwrap_or_default(),
+        );
     }
 }
 
