@@ -41,10 +41,6 @@ required-features = ["serde"]
 name = "perfetto-dump-trace"
 required-features = ["serde"]
 
-[[example]]
-name = "sdk-layer"
-required-features = ["serde"]
-
 [[test]]
 name = "kitchen_sink"
 required-features = ["serde"]
