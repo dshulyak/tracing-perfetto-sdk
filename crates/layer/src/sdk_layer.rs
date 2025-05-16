@@ -122,6 +122,11 @@ where
         let mut debug_annotations = debug_annotations::FFIDebugAnnotations::default();
         attrs.record(&mut debug_annotations);
 
+        #[cfg(feature = "tokio")]
+        if let Some(task_id) = tokio::task::try_id() {
+            debug_annotations.add_display("tokio_task_id", task_id);
+        }
+
         span.extensions_mut().insert(debug_annotations);
     }
 

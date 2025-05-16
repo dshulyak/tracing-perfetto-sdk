@@ -1,6 +1,7 @@
 //! Internal module used to collect span attrs as Perfetto SDK
 //! `DebugAnnotation`s
 
+use std::fmt::Display;
 use std::mem;
 
 use schema::debug_annotation;
@@ -57,6 +58,13 @@ impl FFIDebugAnnotations {
 
     pub fn suppress_event(&self) -> bool {
         self.suppress_event
+    }
+
+    pub fn add_display<D: Display>(&mut self, name: &'static str, value: D) {
+        self.strings.push(ffi::DebugStringAnnotation {
+            key: name,
+            value: value.to_string(),
+        });
     }
 }
 
